@@ -156,8 +156,7 @@ function touchToCanvas(t) {
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
   if (gameState !== STATE.PLAYING) {
-    handleStart();
-    return;
+    return; // Menu/gameover touch handled by later listeners
   }
   for (const t of e.changedTouches) {
     const p = touchToCanvas(t);
@@ -316,15 +315,15 @@ const AudioEngine = {
     if (this.initialized) return;
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = 0.4;
+    this.masterGain.gain.value = settings.masterVol / 100;
     this.masterGain.connect(this.ctx.destination);
 
     this.musicGain = this.ctx.createGain();
-    this.musicGain.gain.value = 0.3;
+    this.musicGain.gain.value = settings.musicVol / 100;
     this.musicGain.connect(this.masterGain);
 
     this.sfxGain = this.ctx.createGain();
-    this.sfxGain.gain.value = 0.5;
+    this.sfxGain.gain.value = settings.sfxVol / 100;
     this.sfxGain.connect(this.masterGain);
 
     this.nextBeatTime = this.ctx.currentTime;
@@ -629,7 +628,10 @@ function spawnExplosion(x, y, count, speed, colors, size) {
 // --- SCREEN SHAKE ---
 let shakeAmount = 0;
 let shakeX = 0, shakeY = 0;
-function addShake(amount) { shakeAmount = Math.max(shakeAmount, amount); }
+function addShake(amount) {
+  if (!settings.screenShake) return;
+  shakeAmount = Math.max(shakeAmount, amount);
+}
 
 // --- STAR BACKGROUND ---
 const stars = [];
@@ -659,6 +661,61 @@ let flashTimer = 0;
 let flashColor = '#fff';
 let gameTime = 0;
 let bossWarningTimer = 0;
+
+// --- MENU STATE ---
+let menuScreen = 'main'; // 'main', 'howtoplay', 'settings', 'highscores', 'credits'
+let menuSelection = 0;
+let menuTime = 0;
+let menuHover = -1; // mouse hover index
+let settingsDragging = null; // which slider is being dragged
+
+const MAIN_MENU_ITEMS = ['PLAY', 'HOW TO PLAY', 'SETTINGS', 'HIGH SCORES', 'CREDITS'];
+const MENU_Y_START = 280; // Y position of first menu item
+const MENU_Y_STEP = 40;  // spacing between items
+
+// --- SETTINGS ---
+const settings = {
+  masterVol: 40,
+  musicVol: 30,
+  sfxVol: 50,
+  screenShake: true,
+};
+
+// Load saved settings
+try {
+  const saved = JSON.parse(localStorage.getItem('voidSurvivorSettings'));
+  if (saved) {
+    if (typeof saved.masterVol === 'number') settings.masterVol = saved.masterVol;
+    if (typeof saved.musicVol === 'number') settings.musicVol = saved.musicVol;
+    if (typeof saved.sfxVol === 'number') settings.sfxVol = saved.sfxVol;
+    if (typeof saved.screenShake === 'boolean') settings.screenShake = saved.screenShake;
+  }
+} catch(e) {}
+
+function saveSettings() {
+  localStorage.setItem('voidSurvivorSettings', JSON.stringify(settings));
+}
+
+function applyVolumes() {
+  if (!AudioEngine.initialized) return;
+  AudioEngine.masterGain.gain.value = settings.masterVol / 100;
+  AudioEngine.musicGain.gain.value = settings.musicVol / 100;
+  AudioEngine.sfxGain.gain.value = settings.sfxVol / 100;
+}
+
+// --- HIGH SCORES LIST ---
+let highScores = [];
+try {
+  const hs = JSON.parse(localStorage.getItem('voidSurvivorHighScores'));
+  if (Array.isArray(hs)) highScores = hs;
+} catch(e) {}
+
+function saveHighScore(newScore, waveReached) {
+  highScores.push({ score: newScore, wave: waveReached, date: Date.now() });
+  highScores.sort((a, b) => b.score - a.score);
+  highScores = highScores.slice(0, 10);
+  localStorage.setItem('voidSurvivorHighScores', JSON.stringify(highScores));
+}
 
 // --- PLAYER ---
 const player = {
@@ -1599,6 +1656,7 @@ function gameOver() {
     highScore = score;
     localStorage.setItem('voidSurvivorHigh', highScore);
   }
+  saveHighScore(score, wave);
   spawnExplosion(player.x, player.y, 50, 300, C.particle, 5);
   addShake(20);
 }
@@ -1812,12 +1870,9 @@ function drawHUD() {
   drawMobileControls();
 }
 
-function drawMenu() {
-  // Clear to dark background
+function drawMenuBackground() {
   ctx.fillStyle = '#0a0a18';
   ctx.fillRect(0, 0, DESIGN_W, DESIGN_H);
-
-  // Stars
   stars.forEach(s => {
     s.y += s.speed * 0.016;
     if (s.y > DESIGN_H) { s.y = 0; s.x = Math.random() * DESIGN_W; }
@@ -1826,54 +1881,389 @@ function drawMenu() {
     ctx.fillRect(s.x, s.y, s.size, s.size);
   });
   ctx.globalAlpha = 1;
+}
 
-  // Title glow background
+function drawMenuTitle(compact) {
+  const yOff = compact ? -40 : 0;
   ctx.save();
   ctx.shadowColor = '#00ffff';
   ctx.shadowBlur = 30;
   ctx.fillStyle = '#00ffff';
-  ctx.font = 'bold 48px monospace';
+  ctx.font = compact ? 'bold 28px monospace' : 'bold 48px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('VOID', DESIGN_W/2, DESIGN_H/2 - 60);
-  // Draw twice for stronger glow
-  ctx.fillText('VOID', DESIGN_W/2, DESIGN_H/2 - 60);
+  const y1 = compact ? 50 : DESIGN_H/2 - 100;
+  ctx.fillText('VOID', DESIGN_W/2, y1);
+  ctx.fillText('VOID', DESIGN_W/2, y1);
   ctx.shadowColor = '#ff0055';
   ctx.fillStyle = '#ff0055';
-  ctx.fillText('SURVIVOR', DESIGN_W/2, DESIGN_H/2 - 10);
-  ctx.fillText('SURVIVOR', DESIGN_W/2, DESIGN_H/2 - 10);
+  const y2 = compact ? 80 : DESIGN_H/2 - 55;
+  ctx.fillText('SURVIVOR', DESIGN_W/2, y2);
+  ctx.fillText('SURVIVOR', DESIGN_W/2, y2);
   ctx.restore();
+}
+
+function drawMenuItem(text, index, y, isSelected, isHovered) {
+  const active = isSelected || isHovered;
+  ctx.textAlign = 'center';
+
+  if (active) {
+    // Glow background bar
+    ctx.fillStyle = 'rgba(0,255,204,0.08)';
+    ctx.fillRect(DESIGN_W/2 - 150, y - 16, 300, 26);
+
+    // Selection indicator
+    const pulse = Math.sin(menuTime * 6) * 3;
+    ctx.fillStyle = '#00ffcc';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('\u25B6', DESIGN_W/2 - 110 + pulse, y);
+    ctx.fillText('\u25C0', DESIGN_W/2 + 110 - pulse, y);
+  }
+
+  ctx.shadowColor = active ? '#00ffcc' : 'transparent';
+  ctx.shadowBlur = active ? 12 : 0;
+  ctx.fillStyle = active ? '#00ffcc' : '#667788';
+  ctx.font = active ? 'bold 16px monospace' : '14px monospace';
+  ctx.fillText(text, DESIGN_W/2, y);
+  ctx.shadowBlur = 0;
+}
+
+function drawBackButton(isSelected, isHovered) {
+  const y = DESIGN_H - 40;
+  const active = isSelected || isHovered;
+  ctx.textAlign = 'center';
+  ctx.shadowColor = active ? '#00ffcc' : 'transparent';
+  ctx.shadowBlur = active ? 10 : 0;
+  ctx.fillStyle = active ? '#00ffcc' : '#667788';
+  ctx.font = active ? 'bold 14px monospace' : '12px monospace';
+  ctx.fillText(active ? '\u25C0 BACK' : 'BACK', DESIGN_W/2, y);
+  ctx.shadowBlur = 0;
+}
+
+function drawSlider(label, value, y, isSelected, isHovered) {
+  const barX = DESIGN_W/2 - 80;
+  const barW = 200;
+  const barH = 8;
+  const active = isSelected || isHovered;
+
+  // Label
+  ctx.textAlign = 'right';
+  ctx.fillStyle = active ? '#00ffcc' : '#889999';
+  ctx.font = '12px monospace';
+  ctx.fillText(label, barX - 12, y + 4);
+
+  // Track
+  ctx.fillStyle = '#222233';
+  ctx.fillRect(barX, y - barH/2, barW, barH);
+
+  // Filled portion
+  const fillW = barW * (value / 100);
+  ctx.fillStyle = active ? '#00ffcc' : '#446666';
+  ctx.fillRect(barX, y - barH/2, fillW, barH);
+
+  // Border
+  ctx.strokeStyle = active ? '#00ffcc' : '#334444';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(barX, y - barH/2, barW, barH);
+
+  // Handle
+  const handleX = barX + fillW;
+  ctx.fillStyle = active ? '#ffffff' : '#88aaaa';
+  ctx.fillRect(handleX - 3, y - 7, 6, 14);
+
+  // Value text
+  ctx.textAlign = 'left';
+  ctx.fillStyle = active ? '#00ffcc' : '#667788';
+  ctx.font = '11px monospace';
+  ctx.fillText(value + '%', barX + barW + 10, y + 4);
+}
+
+function drawToggle(label, value, y, isSelected, isHovered) {
+  const active = isSelected || isHovered;
+  const toggleX = DESIGN_W/2 + 20;
+
+  // Label
+  ctx.textAlign = 'right';
+  ctx.fillStyle = active ? '#00ffcc' : '#889999';
+  ctx.font = '12px monospace';
+  ctx.fillText(label, toggleX - 20, y + 4);
+
+  // Toggle box
+  ctx.strokeStyle = active ? '#00ffcc' : '#446666';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(toggleX, y - 7, 50, 14);
+
+  if (value) {
+    ctx.fillStyle = active ? '#00ffcc' : '#338866';
+    ctx.fillRect(toggleX + 1, y - 6, 48, 12);
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ON', toggleX + 25, y + 4);
+  } else {
+    ctx.fillStyle = '#1a1a2a';
+    ctx.fillRect(toggleX + 1, y - 6, 48, 12);
+    ctx.fillStyle = '#555';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('OFF', toggleX + 25, y + 4);
+  }
+}
+
+function getMenuItemCount() {
+  switch(menuScreen) {
+    case 'main': return MAIN_MENU_ITEMS.length;
+    case 'howtoplay': return 1; // just BACK
+    case 'settings': return 5; // master, music, sfx, shake, back
+    case 'highscores': return 1; // just BACK
+    case 'credits': return 1; // just BACK
+    default: return 1;
+  }
+}
+
+function drawMenu() {
+  menuTime += 0.016;
+  drawMenuBackground();
+
+  switch(menuScreen) {
+    case 'main': drawMainMenu(); break;
+    case 'howtoplay': drawHowToPlay(); break;
+    case 'settings': drawSettingsMenu(); break;
+    case 'highscores': drawHighScoresMenu(); break;
+    case 'credits': drawCreditsMenu(); break;
+  }
+}
+
+function drawMainMenu() {
+  drawMenuTitle(false);
 
   // Subtitle
-  ctx.fillStyle = '#888';
-  ctx.font = '12px monospace';
+  ctx.fillStyle = '#556';
+  ctx.font = '11px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('A RETRO ARCADE BULLET-HELL', DESIGN_W/2, DESIGN_H/2 + 25);
+  ctx.fillText('A RETRO ARCADE BULLET-HELL', DESIGN_W/2, DESIGN_H/2 - 25);
 
-  // Start prompt - always visible, pulsing opacity
-  const pulse = 0.5 + Math.abs(Math.sin(Date.now() / 400)) * 0.5;
-  ctx.globalAlpha = pulse;
-  ctx.fillStyle = '#00ffcc';
-  ctx.font = 'bold 16px monospace';
-  ctx.fillText(isMobile ? '>>> TAP TO START <<<' : '>>> CLICK OR PRESS ENTER TO START <<<', DESIGN_W/2, DESIGN_H/2 + 70);
-  ctx.globalAlpha = 1;
+  // Menu items
+  for (let i = 0; i < MAIN_MENU_ITEMS.length; i++) {
+    const y = MENU_Y_START + i * MENU_Y_STEP;
+    drawMenuItem(MAIN_MENU_ITEMS[i], i, y, menuSelection === i, menuHover === i);
+  }
 
-  // High score
+  // High score at bottom
   if (highScore > 0) {
-    ctx.fillStyle = '#ffff00';
-    ctx.font = '12px monospace';
-    ctx.fillText('HIGH SCORE: ' + highScore.toLocaleString(), DESIGN_W/2, DESIGN_H/2 + 100);
+    ctx.fillStyle = '#ffff0066';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('BEST: ' + highScore.toLocaleString(), DESIGN_W/2, DESIGN_H - 20);
+  }
+}
+
+function drawHowToPlay() {
+  drawMenuTitle(true);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText('HOW TO PLAY', DESIGN_W/2, 120);
+
+  const startY = 160;
+  const lineH = 18;
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  const lx = 120;
+
+  // Controls section
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText('CONTROLS', lx, startY);
+
+  ctx.fillStyle = '#aabbcc';
+  ctx.font = '11px monospace';
+  if (isMobile) {
+    ctx.fillText('LEFT THUMB .......... MOVE', lx, startY + lineH);
+    ctx.fillText('RIGHT SIDE TAP ...... AIM', lx, startY + lineH*2);
+    ctx.fillText('AUTO-FIRE ENABLED', lx, startY + lineH*3);
+    ctx.fillText('BOMB BUTTON ......... CLEAR SCREEN', lx, startY + lineH*4);
+  } else {
+    ctx.fillText('WASD / ARROWS ....... MOVE', lx, startY + lineH);
+    ctx.fillText('MOUSE ............... AIM', lx, startY + lineH*2);
+    ctx.fillText('LEFT CLICK / SPACE .. SHOOT', lx, startY + lineH*3);
+    ctx.fillText('RIGHT CLICK / SHIFT . BOMB', lx, startY + lineH*4);
   }
 
-  // Controls
-  ctx.fillStyle = '#555';
+  // Enemies section
+  const ey = startY + lineH * 6;
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText('ENEMIES', lx, ey);
+
+  ctx.font = '11px monospace';
+  const enemyInfo = [
+    { color: C.enemyA, name: 'DRIFTER', desc: 'Chases you slowly' },
+    { color: C.enemyB, name: 'DASHER', desc: 'Charges at high speed' },
+    { color: C.enemyD, name: 'SWARM', desc: 'Fast, moves in waves' },
+    { color: C.enemyC, name: 'ORBITER', desc: 'Circles you, shoots' },
+    { color: '#ff3388', name: 'SPRAYER', desc: 'Fires bullet arcs' },
+    { color: '#ff8800', name: 'BOMBER', desc: 'Drops bullet rings' },
+  ];
+
+  enemyInfo.forEach((e, i) => {
+    const iy = ey + lineH + i * lineH;
+    ctx.fillStyle = e.color;
+    ctx.fillRect(lx, iy - 6, 8, 8);
+    ctx.fillStyle = '#aabbcc';
+    ctx.fillText(e.name + ' - ' + e.desc, lx + 14, iy);
+  });
+
+  // Powerups section
+  const py = ey + lineH * 8;
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText('POWERUPS', lx, py);
+
+  ctx.font = '11px monospace';
+  const pups = [
+    { color: '#ffff00', name: 'RAPID - Faster fire rate' },
+    { color: '#ff6600', name: 'SPREAD - Wider shot pattern' },
+    { color: C.shield, name: 'SHIELD - Absorbs one hit' },
+    { color: C.enemyD, name: 'SPEED - Temporary speed boost' },
+    { color: C.bomb, name: 'BOMB - Extra bomb charge' },
+    { color: '#ff0066', name: '+LIFE - Extra life' },
+  ];
+
+  pups.forEach((p, i) => {
+    const iy = py + lineH + i * lineH;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(lx, iy - 6, 8, 8);
+    ctx.fillStyle = '#aabbcc';
+    ctx.fillText(p.name, lx + 14, iy);
+  });
+
+  drawBackButton(menuSelection === 0, menuHover === 0);
+}
+
+function drawSettingsMenu() {
+  drawMenuTitle(true);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText('SETTINGS', DESIGN_W/2, 120);
+
+  const startY = 180;
+  const stepY = 50;
+
+  // Sliders: items 0, 1, 2
+  drawSlider('MASTER', settings.masterVol, startY, menuSelection === 0, menuHover === 0);
+  drawSlider('MUSIC', settings.musicVol, startY + stepY, menuSelection === 1, menuHover === 1);
+  drawSlider('SFX', settings.sfxVol, startY + stepY*2, menuSelection === 2, menuHover === 2);
+
+  // Toggle: item 3
+  drawToggle('SCREEN SHAKE', settings.screenShake, startY + stepY*3, menuSelection === 3, menuHover === 3);
+
+  // Back: item 4
+  drawBackButton(menuSelection === 4, menuHover === 4);
+}
+
+function drawHighScoresMenu() {
+  drawMenuTitle(true);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText('HIGH SCORES', DESIGN_W/2, 120);
+
+  const startY = 165;
+  const lineH = 32;
+
+  // Header
+  ctx.fillStyle = '#556677';
   ctx.font = '10px monospace';
-  if (isMobile) {
-    ctx.fillText('LEFT THUMB: MOVE  |  AUTO-AIM + AUTO-FIRE', DESIGN_W/2, DESIGN_H - 40);
-    ctx.fillText('TAP RIGHT SIDE: AIM  |  BOMB BUTTON: SCREEN CLEAR', DESIGN_W/2, DESIGN_H - 25);
+  ctx.textAlign = 'left';
+  ctx.fillText('RANK', DESIGN_W/2 - 160, startY);
+  ctx.fillText('SCORE', DESIGN_W/2 - 80, startY);
+  ctx.textAlign = 'right';
+  ctx.fillText('WAVE', DESIGN_W/2 + 160, startY);
+
+  // Divider
+  ctx.strokeStyle = '#223';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(DESIGN_W/2 - 170, startY + 8);
+  ctx.lineTo(DESIGN_W/2 + 170, startY + 8);
+  ctx.stroke();
+
+  if (highScores.length === 0) {
+    ctx.fillStyle = '#445';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('NO SCORES YET', DESIGN_W/2, startY + 60);
+    ctx.fillText('PLAY A GAME TO SET YOUR FIRST RECORD!', DESIGN_W/2, startY + 80);
   } else {
-    ctx.fillText('WASD/ARROWS: MOVE  |  MOUSE: AIM  |  CLICK/SPACE: SHOOT', DESIGN_W/2, DESIGN_H - 40);
-    ctx.fillText('RIGHT-CLICK / SHIFT: BOMB', DESIGN_W/2, DESIGN_H - 25);
+    for (let i = 0; i < Math.min(10, highScores.length); i++) {
+      const y = startY + 20 + i * lineH;
+      const entry = highScores[i];
+      const isTop = i === 0;
+
+      ctx.fillStyle = isTop ? '#ffff00' : (i < 3 ? '#00ffcc' : '#889999');
+      ctx.font = isTop ? 'bold 13px monospace' : '12px monospace';
+
+      ctx.textAlign = 'left';
+      ctx.fillText('#' + (i + 1), DESIGN_W/2 - 160, y);
+      ctx.fillText(entry.score.toLocaleString(), DESIGN_W/2 - 80, y);
+      ctx.textAlign = 'right';
+      ctx.fillText('WAVE ' + entry.wave, DESIGN_W/2 + 160, y);
+    }
   }
+
+  drawBackButton(menuSelection === 0, menuHover === 0);
+}
+
+function drawCreditsMenu() {
+  drawMenuTitle(true);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#00ffcc';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText('CREDITS', DESIGN_W/2, 120);
+
+  const startY = 190;
+  const lineH = 24;
+
+  ctx.fillStyle = '#aabbcc';
+  ctx.font = '13px monospace';
+  ctx.fillText('VOID SURVIVOR', DESIGN_W/2, startY);
+
+  ctx.fillStyle = '#778899';
+  ctx.font = '11px monospace';
+  ctx.fillText('A RETRO ARCADE BULLET-HELL SHOOTER', DESIGN_W/2, startY + lineH * 1.5);
+
+  ctx.fillStyle = '#556677';
+  ctx.font = '10px monospace';
+  ctx.fillText('BUILT WITH', DESIGN_W/2, startY + lineH * 3.5);
+
+  ctx.fillStyle = '#889999';
+  ctx.font = '11px monospace';
+  ctx.fillText('HTML5 CANVAS + JAVASCRIPT', DESIGN_W/2, startY + lineH * 4.5);
+  ctx.fillText('WEB AUDIO API', DESIGN_W/2, startY + lineH * 5.5);
+  ctx.fillText('PROCEDURAL SOUND GENERATION', DESIGN_W/2, startY + lineH * 6.5);
+
+  ctx.fillStyle = '#445566';
+  ctx.font = '10px monospace';
+  ctx.fillText('NO EXTERNAL ASSETS OR LIBRARIES', DESIGN_W/2, startY + lineH * 8);
+
+  // Decorative line
+  ctx.strokeStyle = '#223';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(DESIGN_W/2 - 100, startY + lineH * 9);
+  ctx.lineTo(DESIGN_W/2 + 100, startY + lineH * 9);
+  ctx.stroke();
+
+  ctx.fillStyle = '#334455';
+  ctx.font = '9px monospace';
+  ctx.fillText('THANK YOU FOR PLAYING', DESIGN_W/2, startY + lineH * 10);
+
+  drawBackButton(menuSelection === 0, menuHover === 0);
 }
 
 function drawGameOver() {
@@ -2101,18 +2491,254 @@ function drawFrame(dt) {
 
 // --- INPUT HANDLERS FOR STATE TRANSITIONS ---
 function handleStart() {
-  if (gameState === STATE.MENU) {
-    startGame();
-  } else if (gameState === STATE.GAMEOVER) {
+  if (gameState === STATE.GAMEOVER) {
+    menuScreen = 'main';
+    menuSelection = 0;
     gameState = STATE.MENU;
     document.body.classList.remove('playing');
   }
 }
 
-canvas.addEventListener('click', handleStart);
-window.addEventListener('keydown', e => {
-  if (e.code === 'Enter') handleStart();
+function menuSelect(index) {
+  if (menuScreen === 'main') {
+    switch(index) {
+      case 0: startGame(); break;
+      case 1: menuScreen = 'howtoplay'; menuSelection = 0; menuHover = -1; break;
+      case 2: menuScreen = 'settings'; menuSelection = 0; menuHover = -1; break;
+      case 3: menuScreen = 'highscores'; menuSelection = 0; menuHover = -1; break;
+      case 4: menuScreen = 'credits'; menuSelection = 0; menuHover = -1; break;
+    }
+  } else if (menuScreen === 'settings') {
+    if (index === 3) {
+      // Toggle screen shake
+      settings.screenShake = !settings.screenShake;
+      saveSettings();
+    } else if (index === 4) {
+      menuBack();
+    }
+  } else {
+    // howtoplay, highscores, credits: index 0 = BACK
+    if (index === 0) menuBack();
+  }
+}
+
+function menuBack() {
+  menuScreen = 'main';
+  menuSelection = 0;
+  menuHover = -1;
+  settingsDragging = null;
+}
+
+function getSliderBarBounds() {
+  // Returns { x, w } for slider hit testing
+  return { x: DESIGN_W/2 - 80, w: 200 };
+}
+
+function setSliderFromX(sliderIndex, mouseX) {
+  const bar = getSliderBarBounds();
+  const val = Math.round(Math.max(0, Math.min(100, ((mouseX - bar.x) / bar.w) * 100)));
+  switch(sliderIndex) {
+    case 0: settings.masterVol = val; break;
+    case 1: settings.musicVol = val; break;
+    case 2: settings.sfxVol = val; break;
+  }
+  applyVolumes();
+  saveSettings();
+}
+
+// Menu item Y hit-test: returns index or -1
+function getMenuItemAtY(my) {
+  if (menuScreen === 'main') {
+    for (let i = 0; i < MAIN_MENU_ITEMS.length; i++) {
+      const y = MENU_Y_START + i * MENU_Y_STEP;
+      if (my >= y - 16 && my <= y + 10) return i;
+    }
+  } else if (menuScreen === 'settings') {
+    const startY = 180;
+    const stepY = 50;
+    // Sliders 0-2
+    for (let i = 0; i < 3; i++) {
+      const y = startY + i * stepY;
+      if (my >= y - 15 && my <= y + 15) return i;
+    }
+    // Toggle 3
+    const toggleY = startY + stepY * 3;
+    if (my >= toggleY - 15 && my <= toggleY + 15) return 3;
+    // Back 4
+    if (my >= DESIGN_H - 55 && my <= DESIGN_H - 25) return 4;
+  } else {
+    // howtoplay, highscores, credits: only BACK
+    if (my >= DESIGN_H - 55 && my <= DESIGN_H - 25) return 0;
+  }
+  return -1;
+}
+
+// --- MOUSE HANDLERS ---
+canvas.addEventListener('click', e => {
+  if (gameState === STATE.GAMEOVER) {
+    handleStart();
+    return;
+  }
+  if (gameState !== STATE.MENU) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) / SCALE;
+  const my = (e.clientY - rect.top) / SCALE;
+
+  const idx = getMenuItemAtY(my);
+  if (idx >= 0) {
+    menuSelect(idx);
+  }
 });
+
+canvas.addEventListener('mousedown', e => {
+  if (gameState !== STATE.MENU || menuScreen !== 'settings') return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) / SCALE;
+  const my = (e.clientY - rect.top) / SCALE;
+
+  // Check if clicking on a slider
+  const startY = 180;
+  const stepY = 50;
+  const bar = getSliderBarBounds();
+  for (let i = 0; i < 3; i++) {
+    const y = startY + i * stepY;
+    if (my >= y - 15 && my <= y + 15 && mx >= bar.x - 10 && mx <= bar.x + bar.w + 10) {
+      settingsDragging = i;
+      setSliderFromX(i, mx);
+      e.preventDefault();
+      return;
+    }
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (gameState !== STATE.MENU) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) / SCALE;
+  const my = (e.clientY - rect.top) / SCALE;
+
+  // Dragging a slider
+  if (settingsDragging !== null) {
+    setSliderFromX(settingsDragging, mx);
+    return;
+  }
+
+  // Hover detection
+  menuHover = getMenuItemAtY(my);
+});
+
+canvas.addEventListener('mouseup', () => {
+  settingsDragging = null;
+});
+
+// --- KEYBOARD HANDLERS ---
+window.addEventListener('keydown', e => {
+  if (gameState === STATE.GAMEOVER) {
+    if (e.code === 'Enter' || e.code === 'Space') handleStart();
+    return;
+  }
+  if (gameState !== STATE.MENU) return;
+
+  const count = getMenuItemCount();
+
+  switch(e.code) {
+    case 'ArrowUp':
+    case 'KeyW':
+      menuSelection = (menuSelection - 1 + count) % count;
+      menuHover = -1;
+      e.preventDefault();
+      break;
+    case 'ArrowDown':
+    case 'KeyS':
+      menuSelection = (menuSelection + 1) % count;
+      menuHover = -1;
+      e.preventDefault();
+      break;
+    case 'ArrowLeft':
+      if (menuScreen === 'settings' && menuSelection < 3) {
+        // Decrease slider
+        const key = ['masterVol','musicVol','sfxVol'][menuSelection];
+        settings[key] = Math.max(0, settings[key] - 5);
+        applyVolumes();
+        saveSettings();
+        e.preventDefault();
+      }
+      break;
+    case 'ArrowRight':
+      if (menuScreen === 'settings' && menuSelection < 3) {
+        // Increase slider
+        const key = ['masterVol','musicVol','sfxVol'][menuSelection];
+        settings[key] = Math.min(100, settings[key] + 5);
+        applyVolumes();
+        saveSettings();
+        e.preventDefault();
+      }
+      break;
+    case 'Enter':
+    case 'Space':
+      menuSelect(menuSelection);
+      e.preventDefault();
+      break;
+    case 'Escape':
+    case 'Backspace':
+      if (menuScreen !== 'main') {
+        menuBack();
+        e.preventDefault();
+      }
+      break;
+  }
+});
+
+// --- TOUCH HANDLERS FOR MENU ---
+canvas.addEventListener('touchstart', e => {
+  if (gameState === STATE.GAMEOVER) {
+    handleStart();
+    e.preventDefault();
+    return;
+  }
+  if (gameState !== STATE.MENU) return;
+
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  const p = touchToCanvas(t);
+
+  // Check slider drag
+  if (menuScreen === 'settings') {
+    const startY = 180;
+    const stepY = 50;
+    const bar = getSliderBarBounds();
+    for (let i = 0; i < 3; i++) {
+      const y = startY + i * stepY;
+      if (p.y >= y - 15 && p.y <= y + 15 && p.x >= bar.x - 10 && p.x <= bar.x + bar.w + 10) {
+        settingsDragging = i;
+        setSliderFromX(i, p.x);
+        return;
+      }
+    }
+  }
+
+  const idx = getMenuItemAtY(p.y);
+  if (idx >= 0) {
+    menuSelect(idx);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  if (gameState !== STATE.MENU) return;
+  e.preventDefault();
+  if (settingsDragging !== null) {
+    const t = e.changedTouches[0];
+    const p = touchToCanvas(t);
+    setSliderFromX(settingsDragging, p.x);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  if (gameState === STATE.MENU) {
+    settingsDragging = null;
+  }
+}, { passive: false });
 
 // --- PREVENT MOBILE SCROLL/ZOOM ---
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
