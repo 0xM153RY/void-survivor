@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>VOID SURVIVOR</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -21,6 +21,10 @@ body.playing {
 canvas {
   display: block;
   image-rendering: pixelated;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 #ui-overlay {
   position: fixed;
@@ -123,6 +127,175 @@ canvas.addEventListener('mouseup', e => {
   if (e.button === 2) mouse.right = false;
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// --- MOBILE / TOUCH ---
+const isMobile = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const touch = {
+  moveActive: false,
+  moveId: null,
+  moveStartX: 0, moveStartY: 0,
+  moveDx: 0, moveDy: 0,
+  aimActive: false,
+  aimId: null,
+  aimX: 0, aimY: 0,
+  bombActive: false,
+};
+const JOYSTICK_RADIUS = 50;
+const JOYSTICK_DEAD = 8;
+let joystickBaseX = 100, joystickBaseY = DESIGN_H - 100;
+let bombBtnX = DESIGN_W - 60, bombBtnY = DESIGN_H - 60, bombBtnR = 30;
+
+function touchToCanvas(t) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (t.clientX - rect.left) / SCALE,
+    y: (t.clientY - rect.top) / SCALE
+  };
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (gameState !== STATE.PLAYING) {
+    handleStart();
+    return;
+  }
+  for (const t of e.changedTouches) {
+    const p = touchToCanvas(t);
+    // Check bomb button
+    const dbx = p.x - bombBtnX, dby = p.y - bombBtnY;
+    if (Math.sqrt(dbx*dbx + dby*dby) < bombBtnR + 10) {
+      touch.bombActive = true;
+      continue;
+    }
+    // Left half = joystick
+    if (p.x < DESIGN_W / 2 && !touch.moveActive) {
+      touch.moveActive = true;
+      touch.moveId = t.identifier;
+      touch.moveStartX = p.x;
+      touch.moveStartY = p.y;
+      touch.moveDx = 0;
+      touch.moveDy = 0;
+      joystickBaseX = p.x;
+      joystickBaseY = p.y;
+    }
+    // Right half = aim direction
+    else if (p.x >= DESIGN_W / 2) {
+      touch.aimActive = true;
+      touch.aimId = t.identifier;
+      touch.aimX = p.x;
+      touch.aimY = p.y;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const p = touchToCanvas(t);
+    if (t.identifier === touch.moveId && touch.moveActive) {
+      touch.moveDx = p.x - touch.moveStartX;
+      touch.moveDy = p.y - touch.moveStartY;
+      // Clamp to joystick radius
+      const d = Math.sqrt(touch.moveDx*touch.moveDx + touch.moveDy*touch.moveDy);
+      if (d > JOYSTICK_RADIUS) {
+        touch.moveDx = (touch.moveDx / d) * JOYSTICK_RADIUS;
+        touch.moveDy = (touch.moveDy / d) * JOYSTICK_RADIUS;
+      }
+    }
+    if (t.identifier === touch.aimId && touch.aimActive) {
+      touch.aimX = p.x;
+      touch.aimY = p.y;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === touch.moveId) {
+      touch.moveActive = false;
+      touch.moveId = null;
+      touch.moveDx = 0;
+      touch.moveDy = 0;
+    }
+    if (t.identifier === touch.aimId) {
+      touch.aimActive = false;
+      touch.aimId = null;
+    }
+  }
+  touch.bombActive = false;
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', e => {
+  touch.moveActive = false;
+  touch.moveId = null;
+  touch.moveDx = 0;
+  touch.moveDy = 0;
+  touch.aimActive = false;
+  touch.aimId = null;
+  touch.bombActive = false;
+}, { passive: false });
+
+function findNearestEnemy() {
+  let nearest = null;
+  let minDist = Infinity;
+  enemies.forEach(e => {
+    const dx = e.x - player.x, dy = e.y - player.y;
+    const d = dx*dx + dy*dy;
+    if (d < minDist) { minDist = d; nearest = e; }
+  });
+  if (boss && boss.alive && !boss.entering) {
+    const dx = boss.x - player.x, dy = boss.y - player.y;
+    const d = dx*dx + dy*dy;
+    if (d < minDist) { nearest = boss; }
+  }
+  return nearest;
+}
+
+function drawMobileControls() {
+  if (!isMobile || gameState !== STATE.PLAYING) return;
+
+  // Joystick base
+  ctx.globalAlpha = 0.2;
+  ctx.strokeStyle = '#00ffff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(joystickBaseX, joystickBaseY, JOYSTICK_RADIUS, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Joystick thumb
+  if (touch.moveActive) {
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = '#00ffff';
+    ctx.beginPath();
+    ctx.arc(joystickBaseX + touch.moveDx, joystickBaseY + touch.moveDy, 18, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = '#00ffff';
+    ctx.beginPath();
+    ctx.arc(joystickBaseX, joystickBaseY, 18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Bomb button
+  ctx.globalAlpha = player.bombs > 0 ? 0.35 : 0.1;
+  ctx.fillStyle = '#ff00ff';
+  ctx.beginPath();
+  ctx.arc(bombBtnX, bombBtnY, bombBtnR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = player.bombs > 0 ? 0.7 : 0.3;
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 12px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('BOMB', bombBtnX, bombBtnY - 2);
+  ctx.font = '9px monospace';
+  ctx.fillText('x' + player.bombs, bombBtnX, bombBtnY + 12);
+  ctx.textBaseline = 'alphabetic';
+
+  ctx.globalAlpha = 1;
+}
 
 // --- AUDIO ENGINE ---
 const AudioEngine = {
@@ -523,7 +696,20 @@ const player = {
     if (keys['KeyS'] || keys['ArrowDown']) my = 1;
     if (keys['KeyA'] || keys['ArrowLeft']) mx = -1;
     if (keys['KeyD'] || keys['ArrowRight']) mx = 1;
-    if (mx !== 0 && my !== 0) { mx *= 0.707; my *= 0.707; }
+
+    // Touch joystick input
+    if (isMobile && touch.moveActive) {
+      const d = Math.sqrt(touch.moveDx*touch.moveDx + touch.moveDy*touch.moveDy);
+      if (d > JOYSTICK_DEAD) {
+        mx = touch.moveDx / JOYSTICK_RADIUS;
+        my = touch.moveDy / JOYSTICK_RADIUS;
+      }
+    }
+
+    if (mx !== 0 && my !== 0) {
+      const len = Math.sqrt(mx*mx + my*my);
+      if (len > 1) { mx /= len; my /= len; }
+    }
 
     const spd = this.speed * (this.speedBoost > 0 ? 1.5 : 1);
     this.vx += mx * spd * 8 * dt;
@@ -539,7 +725,19 @@ const player = {
     this.y = Math.max(margin, Math.min(DESIGN_H - margin, this.y));
 
     // Aim
-    this.angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+    if (isMobile) {
+      // On mobile: aim at touch position on right side, or auto-aim at nearest enemy
+      if (touch.aimActive) {
+        this.angle = Math.atan2(touch.aimY - this.y, touch.aimX - this.x);
+      } else {
+        const nearest = findNearestEnemy();
+        if (nearest) {
+          this.angle = Math.atan2(nearest.y - this.y, nearest.x - this.x);
+        }
+      }
+    } else {
+      this.angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+    }
 
     // Invincibility
     if (this.invincible > 0) this.invincible -= dt;
@@ -555,13 +753,19 @@ const player = {
 
     // Fire
     this.fireTimer -= dt;
-    if ((mouse.down || keys['Space']) && this.fireTimer <= 0) {
+    const shouldFire = isMobile
+      ? (enemies.length > 0 || (boss && boss.alive))
+      : (mouse.down || keys['Space']);
+    if (shouldFire && this.fireTimer <= 0) {
       this.fire();
       this.fireTimer = this.fireRate;
     }
 
     // Bomb
-    if ((mouse.right || keys['ShiftLeft'] || keys['ShiftRight']) && this.bombs > 0) {
+    const bombPressed = isMobile
+      ? touch.bombActive
+      : (mouse.right || keys['ShiftLeft'] || keys['ShiftRight']);
+    if (bombPressed && this.bombs > 0) {
       if (!this._bombCooldown) {
         this.useBomb();
         this._bombCooldown = true;
@@ -1583,24 +1787,29 @@ function drawHUD() {
   if (player.speedBoost > 0) ctx.fillText('SPD BOOST', 70, DESIGN_H - 10);
   if (player.shielded) ctx.fillText('SHIELDED', 150, DESIGN_H - 10);
 
-  // Crosshair
-  ctx.strokeStyle = C.player;
-  ctx.lineWidth = 1;
-  ctx.globalAlpha = 0.7;
-  ctx.beginPath();
-  ctx.arc(mouse.x, mouse.y, 8, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(mouse.x - 12, mouse.y);
-  ctx.lineTo(mouse.x - 5, mouse.y);
-  ctx.moveTo(mouse.x + 5, mouse.y);
-  ctx.lineTo(mouse.x + 12, mouse.y);
-  ctx.moveTo(mouse.x, mouse.y - 12);
-  ctx.lineTo(mouse.x, mouse.y - 5);
-  ctx.moveTo(mouse.x, mouse.y + 5);
-  ctx.lineTo(mouse.x, mouse.y + 12);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+  // Crosshair (desktop only)
+  if (!isMobile) {
+    ctx.strokeStyle = C.player;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(mouse.x - 12, mouse.y);
+    ctx.lineTo(mouse.x - 5, mouse.y);
+    ctx.moveTo(mouse.x + 5, mouse.y);
+    ctx.lineTo(mouse.x + 12, mouse.y);
+    ctx.moveTo(mouse.x, mouse.y - 12);
+    ctx.lineTo(mouse.x, mouse.y - 5);
+    ctx.moveTo(mouse.x, mouse.y + 5);
+    ctx.lineTo(mouse.x, mouse.y + 12);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // Mobile touch controls overlay
+  drawMobileControls();
 }
 
 function drawMenu() {
@@ -1645,7 +1854,7 @@ function drawMenu() {
   ctx.globalAlpha = pulse;
   ctx.fillStyle = '#00ffcc';
   ctx.font = 'bold 16px monospace';
-  ctx.fillText('>>> CLICK OR PRESS ENTER TO START <<<', DESIGN_W/2, DESIGN_H/2 + 70);
+  ctx.fillText(isMobile ? '>>> TAP TO START <<<' : '>>> CLICK OR PRESS ENTER TO START <<<', DESIGN_W/2, DESIGN_H/2 + 70);
   ctx.globalAlpha = 1;
 
   // High score
@@ -1658,8 +1867,13 @@ function drawMenu() {
   // Controls
   ctx.fillStyle = '#555';
   ctx.font = '10px monospace';
-  ctx.fillText('WASD/ARROWS: MOVE  |  MOUSE: AIM  |  CLICK/SPACE: SHOOT', DESIGN_W/2, DESIGN_H - 40);
-  ctx.fillText('RIGHT-CLICK / SHIFT: BOMB', DESIGN_W/2, DESIGN_H - 25);
+  if (isMobile) {
+    ctx.fillText('LEFT THUMB: MOVE  |  AUTO-AIM + AUTO-FIRE', DESIGN_W/2, DESIGN_H - 40);
+    ctx.fillText('TAP RIGHT SIDE: AIM  |  BOMB BUTTON: SCREEN CLEAR', DESIGN_W/2, DESIGN_H - 25);
+  } else {
+    ctx.fillText('WASD/ARROWS: MOVE  |  MOUSE: AIM  |  CLICK/SPACE: SHOOT', DESIGN_W/2, DESIGN_H - 40);
+    ctx.fillText('RIGHT-CLICK / SHIFT: BOMB', DESIGN_W/2, DESIGN_H - 25);
+  }
 }
 
 function drawGameOver() {
@@ -1689,7 +1903,7 @@ function drawGameOver() {
   if (blink) {
     ctx.fillStyle = '#aaa';
     ctx.font = '12px monospace';
-    ctx.fillText('[ CLICK OR PRESS ENTER TO RESTART ]', DESIGN_W/2, DESIGN_H/2 + 90);
+    ctx.fillText(isMobile ? '[ TAP TO RESTART ]' : '[ CLICK OR PRESS ENTER TO RESTART ]', DESIGN_W/2, DESIGN_H/2 + 90);
   }
 }
 
@@ -1899,6 +2113,11 @@ canvas.addEventListener('click', handleStart);
 window.addEventListener('keydown', e => {
   if (e.code === 'Enter') handleStart();
 });
+
+// --- PREVENT MOBILE SCROLL/ZOOM ---
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('gesturechange', e => e.preventDefault());
 
 // --- START ---
 requestAnimationFrame(gameLoop);
